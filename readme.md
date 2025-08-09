@@ -4,8 +4,8 @@ A Bevy Plugin for [Spine](http://esotericsoftware.com/), utilizing [rusty_spine]
 
 ```
 [dependencies]
-bevy = "0.14"
-bevy_spine = "0.10"
+bevy = "0.16"
+bevy_spine = { git = "https://github.com/OttoVT/bevy_spine", tag = "v0.16.0" }
 ```
 
 [See online demos!](https://jabuwu.github.io/bevy_spine_demos/) ([source repo](https://github.com/jabuwu/bevy_spine_demos))
@@ -14,6 +14,7 @@ bevy_spine = "0.10"
 
 | bevy_spine | rusty_spine | bevy | spine |
 | ---------- | ----------- | ---- | ----- |
+| **this**   | 0.8         | 0.16 | 4.2   |
 | 0.10       | 0.8         | 0.14 | 4.2   |
 | 0.9        | 0.8         | 0.13 | 4.2   |
 | 0.8        | 0.7         | 0.13 | 4.1   |
