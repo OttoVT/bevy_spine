@@ -106,7 +106,9 @@ fn controls(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
 ) {
-    let mut window = window_query.single_mut();
+    let Ok(mut window) = window_query.single_mut() else {
+        return;
+    };
     if mouse_buttons.just_pressed(MouseButton::Left) {
         window.cursor_options.grab_mode = CursorGrabMode::Locked;
         window.cursor_options.visible = false;

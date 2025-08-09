@@ -8,6 +8,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use bevy::prelude::ApplyDeferred;
 use bevy::{
     asset::load_internal_binary_asset,
     image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor},
@@ -19,6 +20,7 @@ use bevy::{
     },
     sprite::Material2dPlugin,
 };
+// Parent/Children/ChildBuilder are in prelude
 use materials::{
     SpineAdditiveMaterial, SpineAdditivePmaMaterial, SpineMaterialInfo, SpineMultiplyMaterial,
     SpineMultiplyPmaMaterial, SpineNormalMaterial, SpineNormalPmaMaterial, SpineScreenMaterial,
@@ -157,7 +159,7 @@ impl Plugin for SpinePlugin {
                     .in_set(SpineSet::OnUpdateMesh)
                     .after(SpineSystem::UpdateAnimation)
                     .after(SpineSet::OnEvent),
-                apply_deferred
+                ApplyDeferred
                     .in_set(SpineSystem::SpawnFlush)
                     .after(SpineSystem::Spawn)
                     .before(SpineSystem::Ready),
@@ -213,7 +215,9 @@ pub struct SpineBoneParent {
 }
 
 #[derive(Component, Clone)]
-pub struct SpineMeshes;
+pub struct SpineMeshes {
+    pub spine_entity: Entity,
+}
 
 /// Marker component for child entities containing [`Mesh`] components for Spine rendering.
 ///
@@ -696,7 +700,16 @@ fn spine_spawn(
                         });
                     controller.skeleton.set_to_setup_pose();
                     let mut bones = HashMap::new();
-                    if let Some(mut entity_commands) = commands.get_entity(spine_entity) {
+                    // Spawn bone entities first using the real controller's skeleton so BoneHandles match
+                    if *with_children {
+                        spawn_bones_commands(
+                            spine_entity,
+                            &controller.skeleton,
+                            &mut commands,
+                            &mut bones,
+                        );
+                    }
+                    if let Ok(mut entity_commands) = commands.get_entity(spine_entity) {
                         entity_commands
                             .with_children(|parent| {
                                 // TODO: currently, a mesh is created for each slot, however when we use the
@@ -705,7 +718,7 @@ fn spine_spawn(
                                 parent
                                     .spawn((
                                         Name::new("spine_meshes"),
-                                        SpineMeshes,
+                                        SpineMeshes { spine_entity },
                                         Transform::from_xyz(0., 0., 0.),
                                         GlobalTransform::default(),
                                         Visibility::default(),
@@ -738,16 +751,6 @@ fn spine_spawn(
                                             z += 0.001;
                                         }
                                     });
-                                if *with_children {
-                                    spawn_bones(
-                                        spine_entity,
-                                        None,
-                                        parent,
-                                        &controller.skeleton,
-                                        controller.skeleton.bone_root().handle(),
-                                        &mut bones,
-                                    );
-                                }
                             })
                             .insert(Spine(controller));
                     }
@@ -766,55 +769,75 @@ fn spine_spawn(
     }
 }
 
-fn spawn_bones(
+fn spawn_bones_commands(
     spine_entity: Entity,
-    bone_parent: Option<SpineBoneParent>,
-    parent: &mut ChildBuilder,
     skeleton: &Skeleton,
-    bone: BoneHandle,
+    commands: &mut Commands,
     bones: &mut HashMap<String, Entity>,
 ) {
-    if let Some(bone) = bone.get(skeleton) {
-        let mut transform = Transform::default();
-        transform.translation.x = bone.applied_x();
-        transform.translation.y = bone.applied_y();
-        transform.translation.z = 0.;
-        transform.rotation = Quat::from_axis_angle(Vec3::Z, bone.applied_rotation().to_radians());
-        transform.scale.x = bone.applied_scale_x();
-        transform.scale.y = bone.applied_scale_y();
-        let bone_entity = parent
-            .spawn((
-                Name::new(format!("spine_bone ({})", bone.data().name())),
-                transform,
-                GlobalTransform::default(),
-                Visibility::default(),
-                InheritedVisibility::default(),
-                ViewVisibility::default(),
-            ))
-            .insert(SpineBone {
-                spine_entity,
-                handle: bone.handle(),
-                name: bone.data().name().to_owned(),
-                parent: bone_parent,
-            })
-            .with_children(|parent| {
-                for child in bone.children() {
-                    spawn_bones(
+    fn recurse(
+        spine_entity: Entity,
+        skeleton: &Skeleton,
+        commands: &mut Commands,
+        bones: &mut HashMap<String, Entity>,
+        bone_handle: BoneHandle,
+        parent_entity: Option<Entity>,
+    ) {
+        if let Some(bone) = bone_handle.get(skeleton) {
+            let mut transform = Transform::default();
+            transform.translation.x = bone.applied_x();
+            transform.translation.y = bone.applied_y();
+            transform.rotation =
+                Quat::from_axis_angle(Vec3::Z, bone.applied_rotation().to_radians());
+            transform.scale.x = bone.applied_scale_x();
+            transform.scale.y = bone.applied_scale_y();
+
+            let bone_entity = commands
+                .spawn((
+                    Name::new(format!("spine_bone ({})", bone.data().name())),
+                    transform,
+                    GlobalTransform::default(),
+                    Visibility::default(),
+                    InheritedVisibility::default(),
+                    ViewVisibility::default(),
+                    SpineBone {
                         spine_entity,
-                        Some(SpineBoneParent {
-                            entity: parent.parent_entity(),
-                            handle: bone.handle(),
+                        handle: bone.handle(),
+                        name: bone.data().name().to_owned(),
+                        parent: parent_entity.map(|entity| SpineBoneParent {
+                            entity,
+                            handle: bone_handle,
                         }),
-                        parent,
-                        skeleton,
-                        child.handle(),
-                        bones,
-                    );
-                }
-            })
-            .id();
-        bones.insert(bone.data().name().to_owned(), bone_entity);
+                    },
+                ))
+                .id();
+            if let Some(parent) = parent_entity {
+                commands.entity(parent).add_child(bone_entity);
+            } else {
+                commands.entity(spine_entity).add_child(bone_entity);
+            }
+            bones.insert(bone.data().name().to_owned(), bone_entity);
+
+            for child in bone.children() {
+                recurse(
+                    spine_entity,
+                    skeleton,
+                    commands,
+                    bones,
+                    child.handle(),
+                    Some(bone_entity),
+                );
+            }
+        }
     }
+    recurse(
+        spine_entity,
+        skeleton,
+        commands,
+        bones,
+        skeleton.bone_root().handle(),
+        None,
+    );
 }
 
 fn spine_ready(
@@ -822,7 +845,7 @@ fn spine_ready(
     mut ready_writer: EventWriter<SpineReadyEvent>,
 ) {
     for event in take(&mut ready_events.0).into_iter() {
-        ready_writer.send(event);
+        ready_writer.write(event);
     }
 }
 
@@ -838,7 +861,7 @@ fn spine_update_animation(
     {
         let mut events = spine_event_queue.0.lock().unwrap();
         while let Some(event) = events.pop_front() {
-            spine_events.send(event);
+            spine_events.write(event);
         }
     }
 }
@@ -860,11 +883,12 @@ fn spine_update_meshes(
         Option<&Mesh3d>,
     )>,
     mut commands: Commands,
-    meshes_query: Query<(&Parent, &Children), With<SpineMeshes>>,
+    meshes_query: Query<(&Children, &SpineMeshes)>,
     asset_server: Res<AssetServer>,
 ) {
-    for (meshes_parent, meshes_children) in meshes_query.iter() {
-        let Ok((mut spine, spine_mesh_type)) = spine_query.get_mut(meshes_parent.get()) else {
+    for (meshes_children, meshes_marker) in meshes_query.iter() {
+        let Ok((mut spine, spine_mesh_type)) = spine_query.get_mut(meshes_marker.spine_entity)
+        else {
             continue;
         };
         let SpineSettings {
@@ -886,19 +910,19 @@ fn spine_update_meshes(
                 mut spine_mesh_transform,
                 spine_2d_mesh,
                 spine_3d_mesh,
-            )) = mesh_query.get_mut(*child)
+            )) = mesh_query.get_mut(child)
             {
                 macro_rules! apply_mesh {
                     ($mesh:ident, $condition:expr, $attach:expr, $deattach:ty) => {
                         if $condition {
                             if !$mesh.is_some() {
-                                if let Some(mut entity) = commands.get_entity(spine_mesh_entity) {
+                                if let Ok(mut entity) = commands.get_entity(spine_mesh_entity) {
                                     entity.insert($attach);
                                 }
                             }
                         } else {
                             if $mesh.is_some() {
-                                if let Some(mut entity) = commands.get_entity(spine_mesh_entity) {
+                                if let Ok(mut entity) = commands.get_entity(spine_mesh_entity) {
                                     entity.remove::<$deattach>();
                                 }
                             }
@@ -1072,10 +1096,7 @@ fn adjust_spine_textures(
                 match filter {
                     AtlasFilter::Nearest => ImageFilterMode::Nearest,
                     AtlasFilter::Linear => ImageFilterMode::Linear,
-                    _ => {
-                        warn!("Unsupported Spine filter: {:?}", filter);
-                        ImageFilterMode::Nearest
-                    }
+                    _ => ImageFilterMode::Nearest,
                 }
             }
             fn convert_wrap(wrap: AtlasWrap) -> ImageAddressMode {
@@ -1083,10 +1104,7 @@ fn adjust_spine_textures(
                     AtlasWrap::ClampToEdge => ImageAddressMode::ClampToEdge,
                     AtlasWrap::MirroredRepeat => ImageAddressMode::MirrorRepeat,
                     AtlasWrap::Repeat => ImageAddressMode::Repeat,
-                    _ => {
-                        warn!("Unsupported Spine wrap mode: {:?}", wrap);
-                        ImageAddressMode::ClampToEdge
-                    }
+                    _ => ImageAddressMode::ClampToEdge,
                 }
             }
             image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
@@ -1099,32 +1117,34 @@ fn adjust_spine_textures(
             // The RGB components exported from Spine were premultiplied in nonlinear space, but need to be
             // multiplied in linear space to render properly in Bevy.
             if handle_config.premultiplied_alpha {
-                for i in 0..(image.data.len() / 4) {
-                    let mut rgba = Srgba::rgba_u8(
-                        image.data[i * 4],
-                        image.data[i * 4 + 1],
-                        image.data[i * 4 + 2],
-                        image.data[i * 4 + 3],
-                    );
-                    if rgba.alpha != 0. {
-                        rgba = Srgba::new(
-                            rgba.red / rgba.alpha,
-                            rgba.green / rgba.alpha,
-                            rgba.blue / rgba.alpha,
-                            rgba.alpha,
+                if let Some(data) = image.data.as_mut() {
+                    for i in 0..(data.len() / 4) {
+                        let mut rgba = Srgba::rgba_u8(
+                            data[i * 4],
+                            data[i * 4 + 1],
+                            data[i * 4 + 2],
+                            data[i * 4 + 3],
                         );
-                    } else {
-                        rgba = Srgba::new(0., 0., 0., 0.);
+                        if rgba.alpha != 0. {
+                            rgba = Srgba::new(
+                                rgba.red / rgba.alpha,
+                                rgba.green / rgba.alpha,
+                                rgba.blue / rgba.alpha,
+                                rgba.alpha,
+                            );
+                        } else {
+                            rgba = Srgba::new(0., 0., 0., 0.);
+                        }
+                        let mut linear_rgba = LinearRgba::from(rgba);
+                        linear_rgba.red *= linear_rgba.alpha;
+                        linear_rgba.green *= linear_rgba.alpha;
+                        linear_rgba.blue *= linear_rgba.alpha;
+                        rgba = Srgba::from(linear_rgba);
+                        data[i * 4] = (rgba.red * 255.) as u8;
+                        data[i * 4 + 1] = (rgba.green * 255.) as u8;
+                        data[i * 4 + 2] = (rgba.blue * 255.) as u8;
+                        data[i * 4 + 3] = (rgba.alpha * 255.) as u8;
                     }
-                    let mut linear_rgba = LinearRgba::from(rgba);
-                    linear_rgba.red *= linear_rgba.alpha;
-                    linear_rgba.green *= linear_rgba.alpha;
-                    linear_rgba.blue *= linear_rgba.alpha;
-                    rgba = Srgba::from(linear_rgba);
-                    image.data[i * 4] = (rgba.red * 255.) as u8;
-                    image.data[i * 4 + 1] = (rgba.green * 255.) as u8;
-                    image.data[i * 4 + 2] = (rgba.blue * 255.) as u8;
-                    image.data[i * 4 + 3] = (rgba.alpha * 255.) as u8;
                 }
             }
             removed_handles.push(handle_index);

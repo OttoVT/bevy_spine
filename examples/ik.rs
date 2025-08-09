@@ -63,7 +63,7 @@ fn on_spawn(
             if let Some(mut crosshair_entity) = event
                 .bones
                 .get("crosshair")
-                .and_then(|crosshair_entity| commands.get_entity(*crosshair_entity))
+                .and_then(|crosshair_entity| commands.get_entity(*crosshair_entity).ok())
             {
                 crosshair_entity.insert(Crosshair);
             }
@@ -77,9 +77,13 @@ fn ik(
     camera_query: Query<(Entity, &Camera)>,
     global_transform_query: Query<&GlobalTransform>,
 ) {
-    let (camera_entity, camera) = camera_query.single();
+    let Ok((camera_entity, camera)) = camera_query.single() else {
+        return;
+    };
     let camera_global_transform = global_transform_query.get(camera_entity).unwrap();
-    let window = window_query.single();
+    let Ok(window) = window_query.single() else {
+        return;
+    };
     let cursor_position = window
         .cursor_position()
         .and_then(|cursor| {
@@ -90,7 +94,7 @@ fn ik(
         .map(|ray| ray.origin.truncate())
         .unwrap_or(Vec2::ZERO);
 
-    if let Ok((mut crosshair_transform, crosshair_bone)) = crosshair_query.get_single_mut() {
+    if let Ok((mut crosshair_transform, crosshair_bone)) = crosshair_query.single_mut() {
         let parent_global_transform = global_transform_query
             .get(crosshair_bone.parent.as_ref().unwrap().entity)
             .unwrap();

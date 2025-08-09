@@ -168,54 +168,59 @@ fn player_spine_events(
 
 fn player_aim(
     mut crosshair_query: Query<(&mut Spine, Entity, &CrosshairController, &Player)>,
-    bone_query: Query<(Entity, &Parent), With<SpineBone>>,
+    bone_query: Query<&SpineBone>,
     mut transform_query: Query<&mut Transform>,
     global_transform_query: Query<&GlobalTransform>,
-    window_query: Query<&Window>,
-    camera_query: Query<(Entity, &Camera)>,
+    window_query: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    camera_query: Query<(Entity, &Camera), With<Camera2d>>,
     time: Res<Time>,
 ) {
-    let (camera_entity, camera) = camera_query.single();
-    let camera_global_transform = global_transform_query.get(camera_entity).unwrap();
-    let Ok(window) = window_query.get_single() else {
+    let Ok((camera_entity, camera)) = camera_query.single() else {
         return;
     };
-    let cursor_position = window
+    let camera_global_transform = global_transform_query.get(camera_entity).unwrap();
+    let Ok(window) = window_query.single() else {
+        return;
+    };
+    let cursor_world = window
         .cursor_position()
         .and_then(|cursor| {
             camera
-                .viewport_to_world(camera_global_transform, cursor)
+                .viewport_to_world_2d(camera_global_transform, cursor)
                 .ok()
         })
-        .map(|ray| ray.origin.truncate())
-        .unwrap_or(Vec2::ZERO);
+        .map(|v2| v2.extend(0.0))
+        .unwrap_or(Vec3::ZERO);
     for (mut spine, player_entity, crosshair, player) in crosshair_query.iter_mut() {
         if player.spawned {
-            if let Ok((crosshair_entity, crosshair_parent)) = bone_query.get(crosshair.bone) {
-                let matrix = if let Ok(parent_transform) =
-                    global_transform_query.get(crosshair_parent.get())
-                {
-                    parent_transform.compute_matrix().inverse()
-                } else {
-                    Mat4::IDENTITY
-                };
-                let mut scale_x = 1.;
-                if let Ok(mut crosshair_transform) = transform_query.get_mut(crosshair_entity) {
-                    crosshair_transform.translation =
-                        (matrix * cursor_position.extend(0.).extend(1.)).truncate();
-                    if crosshair_transform.translation.x < 0. {
-                        scale_x = -1.;
+            if let Ok(spine_bone) = bone_query.get(crosshair.bone) {
+                if let Some(parent) = &spine_bone.parent {
+                    let matrix =
+                        if let Ok(parent_transform) = global_transform_query.get(parent.entity) {
+                            parent_transform.compute_matrix().inverse()
+                        } else {
+                            Mat4::IDENTITY
+                        };
+                    let mut scale_x = 1.;
+                    if let Ok(mut crosshair_transform) = transform_query.get_mut(crosshair.bone) {
+                        let local = matrix.transform_point3(cursor_world);
+                        crosshair_transform.translation = local;
+                        if crosshair_transform.translation.x < 0. {
+                            scale_x = -1.;
+                        }
                     }
-                }
-                if let Ok(mut player_transform) = transform_query.get_mut(player_entity) {
-                    player_transform.scale.x = (scale_x * player_transform.scale.x).signum() * 0.25;
-                }
-                if let Some(mut aim_track) =
-                    spine.animation_state.track_at_index_mut(PLAYER_TRACK_AIM)
-                {
-                    let alpha = aim_track.alpha() * 2.5;
-                    aim_track
-                        .set_alpha(lerp::Lerp::lerp(alpha, 1., time.delta_secs()).clamp(0., 1.));
+                    if let Ok(mut player_transform) = transform_query.get_mut(player_entity) {
+                        player_transform.scale.x =
+                            (scale_x * player_transform.scale.x).signum() * 0.25;
+                    }
+                    if let Some(mut aim_track) =
+                        spine.animation_state.track_at_index_mut(PLAYER_TRACK_AIM)
+                    {
+                        let alpha = aim_track.alpha() * 2.5;
+                        aim_track.set_alpha(
+                            lerp::Lerp::lerp(alpha, 1., time.delta_secs()).clamp(0., 1.),
+                        );
+                    }
                 }
             }
         }
@@ -243,7 +248,7 @@ fn player_shoot(
             }
             if let Ok(shoot_transform) = global_transform_query.get(shoot.bone) {
                 let (_, rotation, translation) = shoot_transform.to_scale_rotation_translation();
-                bullet_spawn_events.send(BulletSpawnEvent {
+                bullet_spawn_events.write(BulletSpawnEvent {
                     position: translation.truncate(),
                     velocity: (rotation * Vec3::X).truncate() * 1000. * scale_x.signum(),
                 });
